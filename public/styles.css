@@ -36,6 +36,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .modal-content { background: #1e1e1e; border-radius: 8px; max-width: 600px; width: 90%; max-height: 90vh; overflow: auto; border: 1px solid rgba(255, 255, 255, 0.2); }
 .modal-content.modal-lg { max-width: 800px; }
+.modal-content.modal-sm { max-width: 400px; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
 .modal-header h2 { margin: 0; font-size: 1.2rem; }
 .modal-close { background: none; border: none; font-size: 1.5rem; color: #aaa; cursor: pointer; padding: 0; line-height: 1; }
@@ -55,6 +56,22 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .pagination { display: flex; gap: 0.5rem; justify-content: center; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.1); }
 .pagination button { min-width: 2rem; }
 .pagination button:disabled { background: #2563eb; opacity: 1; }
+
+/* 加载状态 */
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 成功提示 */
+.msg-success {
+  color: #4ade80;
+}
+
+/* 错误提示 */
+.msg-error {
+  color: #f87171;
+}
 
 @media (max-width: 800px) {
   th, td { font-size: 12px; padding: 8px; }

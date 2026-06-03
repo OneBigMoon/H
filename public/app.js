@@ -16,6 +16,8 @@ const filterType = document.querySelector('#filterType');
 let currentUser = null;
 let allUsers = [];
 let cachedOrders = [];
+let isLoading = false;
+let confirmCallback = null;
 
 async function request(path, options = {}) {
   const res = await fetch(path, {
@@ -27,6 +29,64 @@ async function request(path, options = {}) {
   if (!res.ok) throw new Error(data.error || '请求失败');
   return data;
 }
+
+// 表单验证
+function validateOrderForm() {
+  const serial = document.querySelector('#formSerial').value.trim();
+  const customer = document.querySelector('#formCustomer').value.trim();
+  const product = document.querySelector('#formProduct').value.trim();
+
+  const errors = [];
+  if (!serial) errors.push('订单号为必填项');
+  if (!customer) errors.push('客户为必填项');
+  if (!product) errors.push('产品为必填项');
+
+  return errors;
+}
+
+function validateUserForm() {
+  const username = document.querySelector('#formUsername').value.trim();
+  const name = document.querySelector('#formName').value.trim();
+  const password = document.querySelector('#formPassword').value;
+
+  const errors = [];
+  if (!username) errors.push('用户名为必填项');
+  if (!name) errors.push('姓名为必填项');
+
+  // 创建用户时密码必填，编辑时可选
+  const id = document.querySelector('#userId').value;
+  if (!id && !password) errors.push('密码为必填项');
+  if (password && password.length < 6) errors.push('密码长度至少6位');
+
+  return errors;
+}
+
+// 显示验证错误
+function showValidationErrors(errors) {
+  if (errors.length > 0) {
+    hint.textContent = errors.join('；');
+    hint.style.color = '#f87171';
+    return false;
+  }
+  return true;
+}
+
+// 显示确认对话框
+function showConfirm(title, message, callback) {
+  document.querySelector('#confirmTitle').textContent = title;
+  document.querySelector('#confirmMessage').textContent = message;
+  confirmCallback = callback;
+  openModal('confirmModal');
+}
+
+// 确认对话框事件
+document.querySelector('#confirmYes').addEventListener('click', async () => {
+  if (confirmCallback) {
+    await confirmCallback();
+    confirmCallback = null;
+  }
+  closeModal('confirmModal');
+});
 
 function setLoggedIn(user) {
   currentUser = user;
@@ -113,6 +173,10 @@ function renderRows(orders) {
 
 async function loadOrders() {
   if (!currentUser) return;
+
+  // 显示加载状态
+  setLoading(true);
+
   const sortByVal = sortBy.value;
   const sortOrderVal = sortOrder.value;
   const filterVal = filterType.value;
@@ -123,9 +187,51 @@ async function loadOrders() {
     filter: filterVal
   });
 
-  const payload = await request(`/api/orders?${params}`);
-  allUsers = payload.users || [];
-  renderRows(payload.orders || []);
+  try {
+    const payload = await request(`/api/orders?${params}`);
+    allUsers = payload.users || [];
+    cachedOrders = payload.orders || [];
+    renderRows(cachedOrders);
+  } catch (err) {
+    hint.textContent = err.message;
+    hint.style.color = '#f87171';
+  } finally {
+    setLoading(false);
+  }
+}
+
+// 本地搜索（使用缓存）
+function localSearch() {
+  const keyword = searchInput.value.trim().toLowerCase();
+  if (!keyword) {
+    renderRows(cachedOrders);
+    return;
+  }
+
+  const filtered = cachedOrders.filter((order) => {
+    const k = `${order.serial} ${order.customer} ${order.product} ${order.spec}`.toLowerCase();
+    return k.includes(keyword);
+  });
+  renderRows(filtered);
+}
+
+// 设置加载状态
+function setLoading(loading) {
+  isLoading = loading;
+  const buttons = document.querySelectorAll('button');
+  buttons.forEach(btn => {
+    if (loading) {
+      btn.disabled = true;
+      btn.dataset.originalText = btn.textContent;
+      btn.textContent = '加载中...';
+    } else {
+      btn.disabled = false;
+      if (btn.dataset.originalText) {
+        btn.textContent = btn.dataset.originalText;
+        delete btn.dataset.originalText;
+      }
+    }
+  });
 }
 
 async function bootstrap() {
@@ -157,7 +263,7 @@ loginForm.addEventListener('submit', async (e) => {
 });
 
 refreshBtn.addEventListener('click', loadOrders);
-searchInput.addEventListener('input', loadOrders);
+searchInput.addEventListener('input', localSearch);
 sortBy.addEventListener('change', loadOrders);
 sortOrder.addEventListener('change', loadOrders);
 filterType.addEventListener('change', loadOrders);
@@ -279,6 +385,11 @@ addOrderBtn.addEventListener('click', () => {
 // 订单表单提交
 orderForm.addEventListener('submit', async (e) => {
   e.preventDefault();
+
+  // 表单验证
+  const errors = validateOrderForm();
+  if (!showValidationErrors(errors)) return;
+
   const id = document.querySelector('#orderId').value;
   const data = {
     serial: document.querySelector('#formSerial').value.trim(),
@@ -300,10 +411,12 @@ orderForm.addEventListener('submit', async (e) => {
       await request('/api/orders', { method: 'POST', body: JSON.stringify(data) });
       hint.textContent = '订单已创建';
     }
+    hint.style.color = '#4ade80';
     closeModal('orderFormModal');
     await loadOrders();
   } catch (err) {
     hint.textContent = err.message;
+    hint.style.color = '#f87171';
   }
 });
 
@@ -334,15 +447,24 @@ tbody.addEventListener('click', async (e) => {
   const id = e.target?.dataset?.delete;
   if (!id) return;
 
-  if (!confirm('确定要删除此订单吗？此操作不可撤销。')) return;
+  const order = cachedOrders.find(o => o.id === Number(id));
+  const orderInfo = order ? `${order.serial} - ${order.customer}` : '';
 
-  try {
-    await request(`/api/orders/${id}`, { method: 'DELETE' });
-    hint.textContent = '订单已删除';
-    await loadOrders();
-  } catch (err) {
-    hint.textContent = err.message;
-  }
+  showConfirm(
+    '删除订单',
+    `确定要删除订单 ${orderInfo} 吗？此操作不可撤销。`,
+    async () => {
+      try {
+        await request(`/api/orders/${id}`, { method: 'DELETE' });
+        hint.textContent = '订单已删除';
+        hint.style.color = '#4ade80';
+        await loadOrders();
+      } catch (err) {
+        hint.textContent = err.message;
+        hint.style.color = '#f87171';
+      }
+    }
+  );
 });
 
 // 查看订单详情
@@ -439,6 +561,11 @@ addUserBtn.addEventListener('click', () => {
 
 userForm.addEventListener('submit', async (e) => {
   e.preventDefault();
+
+  // 表单验证
+  const errors = validateUserForm();
+  if (!showValidationErrors(errors)) return;
+
   const id = document.querySelector('#userId').value;
   const data = {
     username: document.querySelector('#formUsername').value.trim(),
@@ -455,10 +582,12 @@ userForm.addEventListener('submit', async (e) => {
       await request('/api/users', { method: 'POST', body: JSON.stringify(data) });
       hint.textContent = '用户已创建';
     }
+    hint.style.color = '#4ade80';
     closeModal('userFormModal');
     await loadUsers();
   } catch (err) {
     hint.textContent = err.message;
+    hint.style.color = '#f87171';
   }
 });
 
@@ -486,14 +615,24 @@ usersTbody.addEventListener('click', async (e) => {
   }
 
   if (deleteId) {
-    if (!confirm('确定要删除此用户吗？')) return;
-    try {
-      await request(`/api/users/${deleteId}`, { method: 'DELETE' });
-      hint.textContent = '用户已删除';
-      await loadUsers();
-    } catch (err) {
-      hint.textContent = err.message;
-    }
+    const user = allUsers.find(u => u.id === deleteId);
+    const userInfo = user ? `${user.username} (${user.name})` : '';
+
+    showConfirm(
+      '删除用户',
+      `确定要删除用户 ${userInfo} 吗？`,
+      async () => {
+        try {
+          await request(`/api/users/${deleteId}`, { method: 'DELETE' });
+          hint.textContent = '用户已删除';
+          hint.style.color = '#4ade80';
+          await loadUsers();
+        } catch (err) {
+          hint.textContent = err.message;
+          hint.style.color = '#f87171';
+        }
+      }
+    );
   }
 });
 

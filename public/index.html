@@ -249,6 +249,23 @@
             </div>
           </div>
         </div>
+
+        <!-- 确认对话框 -->
+        <div id="confirmModal" class="modal hidden">
+          <div class="modal-content modal-sm">
+            <div class="modal-header">
+              <h2 id="confirmTitle">确认操作</h2>
+              <button class="modal-close" data-close="confirmModal">×</button>
+            </div>
+            <div class="modal-body">
+              <p id="confirmMessage"></p>
+              <div class="form-actions">
+                <button id="confirmYes" class="btn-danger">确认</button>
+                <button id="confirmNo" data-close="confirmModal">取消</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </main>
     </div>
     <script src="app.js" type="module"></script>
