@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ODCASA 工单追踪系统</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <h1>ODCASA 工单追踪系统</h1>
+        <div id="userInfo"></div>
+      </header>
+
+      <main>
+        <section id="loginArea" class="panel">
+          <h2>登录</h2>
+          <form id="loginForm">
+            <label>
+              用户名
+              <input id="username" autocomplete="username" required />
+            </label>
+            <label>
+              密码
+              <input id="password" type="password" autocomplete="current-password" required />
+            </label>
+            <button type="submit">登录</button>
+          </form>
+          <div id="loginMsg" class="msg"></div>
+        </section>
+
+        <section id="dashboard" class="panel hidden">
+          <div class="topRow">
+            <div>
+              <label>
+                订单搜索
+                <input id="searchInput" placeholder="客户或产品名称" />
+              </label>
+              <button id="refreshBtn">刷新</button>
+            </div>
+            <div>
+              <button id="logoutBtn">退出登录</button>
+            </div>
+          </div>
+
+          <div id="hint" class="msg"></div>
+          <div class="tableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>订单号</th>
+                  <th>客户</th>
+                  <th>产品</th>
+                  <th>下单日期</th>
+                  <th>交期</th>
+                  <th>负责人</th>
+                  <th>进度阶段</th>
+                  <th>整体状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="tbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

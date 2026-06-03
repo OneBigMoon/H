@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.odcasa.ticket</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/worker/odcasa-ticket-system/scripts/start-ticket-system.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/worker/odcasa-ticket-system</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/odcasa-ticket.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/odcasa-ticket.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PORT</key>
+    <string>3000</string>
+  </dict>
+</dict>
+</plist>

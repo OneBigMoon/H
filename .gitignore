@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+*.log
+.odcasa-ticket.out.log
+.odcasa-ticket.err.log
+data/state.json
