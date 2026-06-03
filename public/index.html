@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -9,8 +9,12 @@
   <body>
     <div class="app">
       <header>
-        <h1>ODCASA 工单追踪系统</h1>
-        <div id="userInfo"></div>
+        <h1>📋 ODCASA 工单追踪系统</h1>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <a href="/dashboard.html" class="btn btn-secondary" style="text-decoration: none;">📊 仪表板</a>
+          <a href="/api-docs" target="_blank" class="btn btn-secondary" style="text-decoration: none;">📖 API 文档</a>
+          <div id="userInfo"></div>
+        </div>
       </header>
 
       <main>
@@ -268,6 +272,7 @@
         </div>
       </main>
     </div>
+    <script src="js/toast.js"></script>
     <script src="app.js" type="module"></script>
   </body>
 </html>

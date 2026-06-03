@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ODCASA 仪表板</title>
+    <link rel="stylesheet" href="css/variables.css" />
+    <link rel="stylesheet" href="css/components.css" />
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: var(--font-family);
+        background-color: var(--color-bg-primary);
+        color: var(--color-text-primary);
+        min-height: 100vh;
+      }
+
+      .dashboard {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: var(--space-6);
+      }
+
+      .dashboard-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--space-8);
+      }
+
+      .dashboard-title {
+        font-size: var(--font-size-2xl);
+        font-weight: var(--font-weight-bold);
+      }
+
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: var(--space-4);
+        margin-bottom: var(--space-8);
+      }
+
+      .chart-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+        gap: var(--space-6);
+        margin-bottom: var(--space-8);
+      }
+
+      .chart-card {
+        background-color: var(--color-bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-lg);
+        padding: var(--space-6);
+      }
+
+      .chart-title {
+        font-size: var(--font-size-lg);
+        font-weight: var(--font-weight-semibold);
+        margin-bottom: var(--space-4);
+        color: var(--color-text-primary);
+      }
+
+      .chart-canvas {
+        width: 100%;
+        height: 300px;
+      }
+
+      .recent-orders {
+        background-color: var(--color-bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-lg);
+        padding: var(--space-6);
+      }
+
+      .status-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: var(--space-2);
+      }
+
+      .status-dot.completed { background-color: var(--color-success); }
+      .status-dot.in-progress { background-color: var(--color-brand-primary); }
+      .status-dot.pending { background-color: var(--color-warning); }
+      .status-dot.overdue { background-color: var(--color-error); }
+
+      @media (max-width: 768px) {
+        .dashboard {
+          padding: var(--space-4);
+        }
+        .stats-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .chart-container {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="dashboard">
+      <!-- Header -->
+      <div class="dashboard-header">
+        <h1 class="dashboard-title">📊 仪表板</h1>
+        <div>
+          <a href="/" class="btn btn-secondary">返回主页</a>
+          <button id="refreshBtn" class="btn btn-primary">刷新数据</button>
+        </div>
+      </div>
+
+      <!-- 统计卡片 -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">总订单数</div>
+          <div class="stat-value" id="totalOrders">-</div>
+          <div class="stat-change positive">
+            <span>↑</span>
+            <span id="ordersChange">-</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">进行中</div>
+          <div class="stat-value" id="inProgressOrders">-</div>
+          <div class="stat-change">
+            <span id="inProgressPercent">-</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">已逾期</div>
+          <div class="stat-value" id="overdueOrders" style="color: var(--color-error);">-</div>
+          <div class="stat-change negative">
+            <span>⚠</span>
+            <span id="overduePercent">-</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">完成率</div>
+          <div class="stat-value" id="completionRate">-</div>
+          <div class="progress" style="margin-top: var(--space-2);">
+            <div class="progress-bar" id="completionBar" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 图表 -->
+      <div class="chart-container">
+        <div class="chart-card">
+          <div class="chart-title">订单状态分布</div>
+          <canvas id="statusChart" class="chart-canvas"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">近期订单趋势</div>
+          <canvas id="trendChart" class="chart-canvas"></canvas>
+        </div>
+      </div>
+
+      <!-- 最近订单 -->
+      <div class="recent-orders">
+        <div class="chart-title">最近订单</div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>订单号</th>
+              <th>客户</th>
+              <th>产品</th>
+              <th>交期</th>
+              <th>状态</th>
+              <th>负责人</th>
+            </tr>
+          </thead>
+          <tbody id="recentOrdersBody">
+            <tr>
+              <td colspan="6" style="text-align: center; color: var(--color-text-tertiary);">加载中...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <script src="js/toast.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script>
+      let statusChart = null;
+      let trendChart = null;
+
+      async function fetchOrders() {
+        try {
+          const res = await fetch('/api/orders', { credentials: 'include' });
+          if (!res.ok) throw new Error('未登录');
+          return await res.json();
+        } catch (err) {
+          window.toast.error('请先登录');
+          setTimeout(() => window.location.href = '/', 1000);
+          return null;
+        }
+      }
+
+      function updateStats(orders) {
+        const total = orders.length;
+        const inProgress = orders.filter(o => o.overall === '进行中').length;
+        const completed = orders.filter(o => o.overall === '已完成').length;
+        const today = new Date().toISOString().slice(0, 10);
+        const overdue = orders.filter(o => o.dueDate && o.dueDate < today && o.overall !== '已完成').length;
+
+        document.getElementById('totalOrders').textContent = total;
+        document.getElementById('inProgressOrders').textContent = inProgress;
+        document.getElementById('overdueOrders').textContent = overdue;
+
+        const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+        document.getElementById('completionRate').textContent = `${completionRate}%`;
+        document.getElementById('completionBar').style.width = `${completionRate}%`;
+
+        document.getElementById('ordersChange').textContent = `共 ${total} 单`;
+        document.getElementById('inProgressPercent').textContent = `${total > 0 ? Math.round((inProgress / total) * 100) : 0}%`;
+        document.getElementById('overduePercent').textContent = `${total > 0 ? Math.round((overdue / total) * 100) : 0}%`;
+      }
+
+      function renderStatusChart(orders) {
+        const ctx = document.getElementById('statusChart').getContext('2d');
+        const statusCounts = {
+          '未开始': orders.filter(o => o.overall === '未开始').length,
+          '进行中': orders.filter(o => o.overall === '进行中').length,
+          '已完成': orders.filter(o => o.overall === '已完成').length
+        };
+
+        if (statusChart) {
+          statusChart.destroy();
+        }
+
+        statusChart = new Chart(ctx, {
+          type: 'doughnut',
+          data: {
+            labels: Object.keys(statusCounts),
+            datasets: [{
+              data: Object.values(statusCounts),
+              backgroundColor: [
+                'rgba(245, 158, 11, 0.8)',
+                'rgba(59, 130, 246, 0.8)',
+                'rgba(16, 185, 129, 0.8)'
+              ],
+              borderColor: [
+                'rgba(245, 158, 11, 1)',
+                'rgba(59, 130, 246, 1)',
+                'rgba(16, 185, 129, 1)'
+              ],
+              borderWidth: 2
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: 'bottom',
+                labels: {
+                  color: '#94a3b8',
+                  padding: 20
+                }
+              }
+            }
+          }
+        });
+      }
+
+      function renderTrendChart(orders) {
+        const ctx = document.getElementById('trendChart').getContext('2d');
+
+        // 按创建日期分组
+        const dateCounts = {};
+        orders.forEach(order => {
+          const date = order.createdAt?.slice(0, 10) || '未知';
+          dateCounts[date] = (dateCounts[date] || 0) + 1;
+        });
+
+        const sortedDates = Object.keys(dateCounts).sort().slice(-7); // 最近7天
+        const counts = sortedDates.map(date => dateCounts[date]);
+
+        if (trendChart) {
+          trendChart.destroy();
+        }
+
+        trendChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: sortedDates.map(d => d.slice(5)), // 只显示月-日
+            datasets: [{
+              label: '新增订单',
+              data: counts,
+              borderColor: 'rgba(59, 130, 246, 1)',
+              backgroundColor: 'rgba(59, 130, 246, 0.1)',
+              fill: true,
+              tension: 0.4,
+              pointBackgroundColor: 'rgba(59, 130, 246, 1)',
+              pointBorderColor: '#fff',
+              pointBorderWidth: 2,
+              pointRadius: 4
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                display: false
+              }
+            },
+            scales: {
+              x: {
+                grid: {
+                  color: 'rgba(255, 255, 255, 0.05)'
+                },
+                ticks: {
+                  color: '#94a3b8'
+                }
+              },
+              y: {
+                beginAtZero: true,
+                grid: {
+                  color: 'rgba(255, 255, 255, 0.05)'
+                },
+                ticks: {
+                  color: '#94a3b8',
+                  stepSize: 1
+                }
+              }
+            }
+          }
+        });
+      }
+
+      function renderRecentOrders(orders, users) {
+        const tbody = document.getElementById('recentOrdersBody');
+        const recent = orders.slice(0, 10);
+        const today = new Date().toISOString().slice(0, 10);
+
+        if (recent.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--color-text-tertiary);">暂无订单</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = recent.map(order => {
+          const assignee = users.find(u => u.id === order.assignedTo)?.name || '未分配';
+          const isOverdue = order.dueDate && order.dueDate < today && order.overall !== '已完成';
+          const statusClass = order.overall === '已完成' ? 'completed' :
+                            order.overall === '进行中' ? 'in-progress' :
+                            isOverdue ? 'overdue' : 'pending';
+
+          return `
+            <tr>
+              <td><strong>${order.serial}</strong></td>
+              <td>${order.customer}</td>
+              <td>${order.product}</td>
+              <td>${order.dueDate || '-'}</td>
+              <td>
+                <span class="status-dot ${statusClass}"></span>
+                ${order.overall}
+              </td>
+              <td>${assignee}</td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      async function loadDashboard() {
+        const data = await fetchOrders();
+        if (!data) return;
+
+        updateStats(data.orders);
+        renderStatusChart(data.orders);
+        renderTrendChart(data.orders);
+        renderRecentOrders(data.orders, data.users);
+
+        window.toast.success('数据已刷新');
+      }
+
+      // 刷新按钮
+      document.getElementById('refreshBtn').addEventListener('click', loadDashboard);
+
+      // 初始加载
+      loadDashboard();
+    </script>
+  </body>
+</html>

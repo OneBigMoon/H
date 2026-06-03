@@ -64,8 +64,7 @@ function validateUserForm() {
 // 显示验证错误
 function showValidationErrors(errors) {
   if (errors.length > 0) {
-    hint.textContent = errors.join('；');
-    hint.style.color = '#f87171';
+    window.toast.warning(errors.join('；'));
     return false;
   }
   return true;
@@ -193,8 +192,7 @@ async function loadOrders() {
     cachedOrders = payload.orders || [];
     renderRows(cachedOrders);
   } catch (err) {
-    hint.textContent = err.message;
-    hint.style.color = '#f87171';
+    window.toast.error(err.message);
   } finally {
     setLoading(false);
   }
@@ -218,7 +216,7 @@ function localSearch() {
 // 设置加载状态
 function setLoading(loading) {
   isLoading = loading;
-  const buttons = document.querySelectorAll('button');
+  const buttons = document.querySelectorAll('button:not(.modal-close):not(.toast-close)');
   buttons.forEach(btn => {
     if (loading) {
       btn.disabled = true;
@@ -256,9 +254,11 @@ loginForm.addEventListener('submit', async (e) => {
       body: JSON.stringify({ username, password })
     });
     setLoggedIn(payload.user);
+    window.toast.success(`欢迎回来，${payload.user.name}！`);
     await loadOrders();
   } catch (e) {
     loginMsg.textContent = e.message;
+    window.toast.error(e.message);
   }
 });
 
@@ -284,9 +284,9 @@ tbody.addEventListener('click', async (e) => {
         method: 'PATCH',
         body: JSON.stringify({ stage, status, comment })
       });
-      hint.textContent = '已更新';
+      window.toast.success('已更新');
     } catch (err) {
-      hint.textContent = err.message;
+      window.toast.error(err.message);
       return;
     }
   }
@@ -303,10 +303,10 @@ tbody.addEventListener('change', async (e) => {
       method: 'POST',
       body: JSON.stringify({ assignee })
     });
-    hint.textContent = '分配完成';
+    window.toast.success('分配完成');
     await loadOrders();
   } catch (err) {
-    hint.textContent = err.message;
+    window.toast.error(err.message);
   }
 });
 
@@ -335,9 +335,9 @@ exportBtn.addEventListener('click', async () => {
     a.click();
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
-    hint.textContent = '导出成功';
+    window.toast.success('导出成功');
   } catch (err) {
-    hint.textContent = err.message;
+    window.toast.error(err.message);
   }
 });
 
@@ -406,17 +406,15 @@ orderForm.addEventListener('submit', async (e) => {
   try {
     if (id) {
       await request(`/api/orders/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-      hint.textContent = '订单已更新';
+      window.toast.success('订单已更新');
     } else {
       await request('/api/orders', { method: 'POST', body: JSON.stringify(data) });
-      hint.textContent = '订单已创建';
+      window.toast.success('订单已创建');
     }
-    hint.style.color = '#4ade80';
     closeModal('orderFormModal');
     await loadOrders();
   } catch (err) {
-    hint.textContent = err.message;
-    hint.style.color = '#f87171';
+    window.toast.error(err.message);
   }
 });
 
@@ -456,12 +454,10 @@ tbody.addEventListener('click', async (e) => {
     async () => {
       try {
         await request(`/api/orders/${id}`, { method: 'DELETE' });
-        hint.textContent = '订单已删除';
-        hint.style.color = '#4ade80';
+        window.toast.success('订单已删除');
         await loadOrders();
       } catch (err) {
-        hint.textContent = err.message;
-        hint.style.color = '#f87171';
+        window.toast.error(err.message);
       }
     }
   );
@@ -506,7 +502,7 @@ tbody.addEventListener('click', async (e) => {
     orderDetailBody.innerHTML = html;
     openModal('orderDetailModal');
   } catch (err) {
-    hint.textContent = err.message;
+    window.toast.error(err.message);
   }
 });
 
@@ -522,7 +518,7 @@ const userForm = document.querySelector('#userForm');
 
 usersBtn.addEventListener('click', async () => {
   if (currentUser.role !== 'admin') {
-    hint.textContent = '只有管理员可管理用户';
+    window.toast.warning('只有管理员可管理用户');
     return;
   }
   await loadUsers();
@@ -534,7 +530,7 @@ async function loadUsers() {
     const payload = await request('/api/users');
     renderUsers(payload.users || []);
   } catch (err) {
-    hint.textContent = err.message;
+    window.toast.error(err.message);
   }
 }
 
@@ -577,17 +573,15 @@ userForm.addEventListener('submit', async (e) => {
   try {
     if (id) {
       await request(`/api/users/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-      hint.textContent = '用户已更新';
+      window.toast.success('用户已更新');
     } else {
       await request('/api/users', { method: 'POST', body: JSON.stringify(data) });
-      hint.textContent = '用户已创建';
+      window.toast.success('用户已创建');
     }
-    hint.style.color = '#4ade80';
     closeModal('userFormModal');
     await loadUsers();
   } catch (err) {
-    hint.textContent = err.message;
-    hint.style.color = '#f87171';
+    window.toast.error(err.message);
   }
 });
 
@@ -610,7 +604,7 @@ usersTbody.addEventListener('click', async (e) => {
         openModal('userFormModal');
       }
     } catch (err) {
-      hint.textContent = err.message;
+      window.toast.error(err.message);
     }
   }
 
@@ -624,12 +618,10 @@ usersTbody.addEventListener('click', async (e) => {
       async () => {
         try {
           await request(`/api/users/${deleteId}`, { method: 'DELETE' });
-          hint.textContent = '用户已删除';
-          hint.style.color = '#4ade80';
+          window.toast.success('用户已删除');
           await loadUsers();
         } catch (err) {
-          hint.textContent = err.message;
-          hint.style.color = '#f87171';
+          window.toast.error(err.message);
         }
       }
     );
@@ -645,7 +637,7 @@ const logsPagination = document.querySelector('#logsPagination');
 
 logsBtn.addEventListener('click', async () => {
   if (currentUser.role !== 'admin') {
-    hint.textContent = '只有管理员可查看日志';
+    window.toast.warning('只有管理员可查看日志');
     return;
   }
   await loadLogs(1);
@@ -658,7 +650,7 @@ async function loadLogs(page = 1) {
     renderLogs(payload.logs || []);
     renderLogsPagination(payload.pagination || {});
   } catch (err) {
-    hint.textContent = err.message;
+    window.toast.error(err.message);
   }
 }
 
