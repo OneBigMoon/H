@@ -37,9 +37,36 @@
                 订单搜索
                 <input id="searchInput" placeholder="客户或产品名称" />
               </label>
+              <label>
+                排序
+                <select id="sortBy">
+                  <option value="id">默认</option>
+                  <option value="dueDate">交期</option>
+                  <option value="orderDate">下单日期</option>
+                </select>
+              </label>
+              <label>
+                排序方式
+                <select id="sortOrder">
+                  <option value="asc">升序</option>
+                  <option value="desc">降序</option>
+                </select>
+              </label>
+              <label>
+                筛选
+                <select id="filterType">
+                  <option value="all">全部</option>
+                  <option value="overdue">已逾期</option>
+                  <option value="upcoming">即将逾期</option>
+                </select>
+              </label>
               <button id="refreshBtn">刷新</button>
+              <button id="addOrderBtn" class="btn-primary">新建订单</button>
             </div>
             <div>
+              <button id="usersBtn">用户管理</button>
+              <button id="logsBtn">日志查看</button>
+              <button id="exportBtn" class="btn-primary">导出</button>
               <button id="logoutBtn">退出登录</button>
             </div>
           </div>
@@ -64,6 +91,164 @@
             </table>
           </div>
         </section>
+
+        <!-- 订单详情模态框 -->
+        <div id="orderDetailModal" class="modal hidden">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h2>订单详情</h2>
+              <button class="modal-close" data-close="orderDetailModal">×</button>
+            </div>
+            <div class="modal-body" id="orderDetailBody">
+            </div>
+          </div>
+        </div>
+
+        <!-- 新建/编辑订单模态框 -->
+        <div id="orderFormModal" class="modal hidden">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h2 id="orderFormTitle">新建订单</h2>
+              <button class="modal-close" data-close="orderFormModal">×</button>
+            </div>
+            <div class="modal-body">
+              <form id="orderForm">
+                <input type="hidden" id="orderId" />
+                <div class="form-grid">
+                  <label>
+                    订单号 *
+                    <input id="formSerial" required />
+                  </label>
+                  <label>
+                    客户 *
+                    <input id="formCustomer" required />
+                  </label>
+                  <label>
+                    产品 *
+                    <input id="formProduct" required />
+                  </label>
+                  <label>
+                    规格
+                    <input id="formSpec" />
+                  </label>
+                  <label>
+                    下单日期
+                    <input id="formOrderDate" type="date" />
+                  </label>
+                  <label>
+                    交期
+                    <input id="formDueDate" type="date" />
+                  </label>
+                  <label>
+                    数量
+                    <input id="formQuantity" />
+                  </label>
+                  <label>
+                    周期天数
+                    <input id="formCycleDays" />
+                  </label>
+                  <label class="full-width">
+                    备注
+                    <textarea id="formNote" rows="3"></textarea>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <button type="submit" class="btn-primary">保存</button>
+                  <button type="button" data-close="orderFormModal">取消</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- 用户管理模态框 -->
+        <div id="usersModal" class="modal hidden">
+          <div class="modal-content modal-lg">
+            <div class="modal-header">
+              <h2>用户管理</h2>
+              <button class="modal-close" data-close="usersModal">×</button>
+            </div>
+            <div class="modal-body">
+              <button id="addUserBtn" class="btn-primary" style="margin-bottom: 1rem;">新建用户</button>
+              <table>
+                <thead>
+                  <tr>
+                    <th>用户名</th>
+                    <th>姓名</th>
+                    <th>角色</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- 新建/编辑用户模态框 -->
+        <div id="userFormModal" class="modal hidden">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h2 id="userFormTitle">新建用户</h2>
+              <button class="modal-close" data-close="userFormModal">×</button>
+            </div>
+            <div class="modal-body">
+              <form id="userForm">
+                <input type="hidden" id="userId" />
+                <label>
+                  用户名 *
+                  <input id="formUsername" required />
+                </label>
+                <label>
+                  姓名 *
+                  <input id="formName" required />
+                </label>
+                <label>
+                  角色
+                  <select id="formRole">
+                    <option value="employee">员工</option>
+                    <option value="admin">管理员</option>
+                  </select>
+                </label>
+                <label>
+                  密码 *
+                  <input id="formPassword" type="password" required />
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="btn-primary">保存</button>
+                  <button type="button" data-close="userFormModal">取消</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- 日志查看模态框 -->
+        <div id="logsModal" class="modal hidden">
+          <div class="modal-content modal-lg">
+            <div class="modal-header">
+              <h2>操作日志</h2>
+              <button class="modal-close" data-close="logsModal">×</button>
+            </div>
+            <div class="modal-body">
+              <div id="logsContent">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>操作人</th>
+                      <th>订单ID</th>
+                      <th>操作</th>
+                      <th>详情</th>
+                    </tr>
+                  </thead>
+                  <tbody id="logsTbody"></tbody>
+                </table>
+                <div id="logsPagination" class="pagination"></div>
+              </div>
+            </div>
+          </div>
+        </div>
       </main>
     </div>
     <script src="app.js" type="module"></script>

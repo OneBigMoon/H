@@ -232,14 +232,100 @@ async function createApp({ dataPath = DEFAULT_DATA_PATH, xlsxPath = DEFAULT_XLSX
 
   app.get('/api/orders', auth, (req, res) => {
     const user = req.currentUser;
-    const orders = state.orders
+    let orders = state.orders
       .filter((o) => user.role === 'admin' || o.assignedTo === user.id)
       .map((o) => ({
         ...o,
         canEdit: user.role === 'admin' || o.assignedTo === user.id
       }));
 
+    // 排序
+    const sortBy = req.query.sortBy || 'id';
+    const sortOrder = req.query.sortOrder === 'desc' ? -1 : 1;
+
+    orders.sort((a, b) => {
+      let valueA = a[sortBy] || '';
+      let valueB = b[sortBy] || '';
+
+      // 日期字段特殊处理
+      if (['orderDate', 'dueDate', 'createdAt'].includes(sortBy)) {
+        valueA = valueA ? new Date(valueA).getTime() : 0;
+        valueB = valueB ? new Date(valueB).getTime() : 0;
+      }
+
+      if (valueA < valueB) return -1 * sortOrder;
+      if (valueA > valueB) return 1 * sortOrder;
+      return 0;
+    });
+
+    // 筛选
+    const filter = req.query.filter || 'all';
+    if (filter === 'overdue') {
+      const today = new Date().toISOString().slice(0, 10);
+      orders = orders.filter((o) => o.dueDate && o.dueDate < today && o.overall !== '已完成');
+    } else if (filter === 'upcoming') {
+      const today = new Date();
+      const threeDaysLater = new Date(today.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const todayStr = today.toISOString().slice(0, 10);
+      orders = orders.filter((o) => o.dueDate && o.dueDate >= todayStr && o.dueDate <= threeDaysLater && o.overall !== '已完成');
+    }
+
     res.json({ orders, users: state.users, currentUser: user });
+  });
+
+  // ===== 导出功能 =====
+
+  // 导出订单为 Excel（管理员）
+  app.get('/api/orders/export', auth, async (req, res) => {
+    const user = req.currentUser;
+    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可导出数据' });
+
+    const orders = state.orders.filter((o) => user.role === 'admin' || o.assignedTo === user.id);
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('订单列表');
+
+    // 设置表头
+    ws.columns = [
+      { header: '订单号', key: 'serial', width: 15 },
+      { header: '客户', key: 'customer', width: 20 },
+      { header: '产品', key: 'product', width: 20 },
+      { header: '规格', key: 'spec', width: 15 },
+      { header: '下单日期', key: 'orderDate', width: 12 },
+      { header: '交期', key: 'dueDate', width: 12 },
+      { header: '数量', key: 'quantity', width: 10 },
+      { header: '周期天数', key: 'cycleDays', width: 10 },
+      { header: '负责人', key: 'assignedTo', width: 10 },
+      { header: '整体状态', key: 'overall', width: 10 },
+      { header: '备注', key: 'note', width: 30 }
+    ];
+
+    // 添加数据行
+    orders.forEach((order) => {
+      const assigneeName = state.users.find((u) => u.id === order.assignedTo)?.name || '未分配';
+      ws.addRow({
+        serial: order.serial,
+        customer: order.customer,
+        product: order.product,
+        spec: order.spec,
+        orderDate: order.orderDate,
+        dueDate: order.dueDate,
+        quantity: order.quantity,
+        cycleDays: order.cycleDays,
+        assignedTo: assigneeName,
+        overall: order.overall,
+        note: order.note
+      });
+    });
+
+    // 设置响应头
+    const filename = `ODCASA_订单_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+
+    // 写入响应
+    await wb.xlsx.write(res);
+    res.end();
   });
 
   app.get('/api/orders/:id', auth, (req, res) => {
@@ -252,6 +338,346 @@ async function createApp({ dataPath = DEFAULT_DATA_PATH, xlsxPath = DEFAULT_XLSX
     res.json({ order, logs, canEdit: user.role === 'admin' || order.assignedTo === user.id });
   });
 
+  // ===== 用户管理 API =====
+
+  // 获取用户列表（管理员）
+  app.get('/api/users', auth, (req, res) => {
+    const user = req.currentUser;
+    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可查看用户列表' });
+
+    const users = state.users.map((u) => ({
+      id: u.id,
+      username: u.username,
+      name: u.name,
+      role: u.role
+    }));
+    res.json({ users });
+  });
+
+  // 创建新用户（管理员）
+  app.post('/api/users', auth, (req, res) => {
+    const user = req.currentUser;
+    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可创建用户' });
+
+    const { username, name, role = 'employee', password } = req.body || {};
+    if (!username || !name || !password) {
+      return res.status(400).json({ error: '用户名、姓名、密码为必填项' });
+    }
+
+    // 检查用户名是否已存在
+    const exists = state.users.find((u) => u.username === username);
+    if (exists) {
+      return res.status(409).json({ error: '用户名已存在' });
+    }
+
+    const newUser = {
+      id: username,
+      username,
+      name,
+      role,
+      passwordHash: hashPassword(password, username)
+    };
+
+    state.users.push(newUser);
+
+    // 记录日志
+    state.logs.push({
+      id: state.nextLogId++,
+      orderId: null,
+      userId: user.id,
+      action: 'create_user',
+      stage: null,
+      before: null,
+      after: null,
+      comment: `创建用户: ${username} (${name})`,
+      at: new Date().toISOString()
+    });
+
+    writeStateToFile(dataPath, state);
+    res.status(201).json({
+      user: {
+        id: newUser.id,
+        username: newUser.username,
+        name: newUser.name,
+        role: newUser.role
+      }
+    });
+  });
+
+  // 编辑用户信息（管理员）
+  app.put('/api/users/:id', auth, (req, res) => {
+    const user = req.currentUser;
+    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可编辑用户' });
+
+    const target = state.users.find((u) => u.id === req.params.id);
+    if (!target) return res.status(404).json({ error: '用户不存在' });
+
+    const { name, role, password } = req.body || {};
+    const changes = [];
+
+    if (name !== undefined && name !== target.name) {
+      changes.push(`姓名: ${target.name} -> ${name}`);
+      target.name = name;
+    }
+    if (role !== undefined && role !== target.role) {
+      changes.push(`角色: ${target.role} -> ${role}`);
+      target.role = role;
+    }
+    if (password) {
+      target.passwordHash = hashPassword(password, target.username);
+      changes.push('密码已更新');
+    }
+
+    if (changes.length > 0) {
+      state.logs.push({
+        id: state.nextLogId++,
+        orderId: null,
+        userId: user.id,
+        action: 'update_user',
+        stage: null,
+        before: null,
+        after: null,
+        comment: `更新用户 ${target.username}: ${changes.join('; ')}`,
+        at: new Date().toISOString()
+      });
+
+      writeStateToFile(dataPath, state);
+    }
+
+    res.json({
+      user: {
+        id: target.id,
+        username: target.username,
+        name: target.name,
+        role: target.role
+      }
+    });
+  });
+
+  // 删除用户（管理员）
+  app.delete('/api/users/:id', auth, (req, res) => {
+    const user = req.currentUser;
+    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可删除用户' });
+
+    const targetIndex = state.users.findIndex((u) => u.id === req.params.id);
+    if (targetIndex < 0) return res.status(404).json({ error: '用户不存在' });
+
+    const target = state.users[targetIndex];
+
+    // 不能删除自己
+    if (target.id === user.id) {
+      return res.status(400).json({ error: '不能删除当前登录的用户' });
+    }
+
+    // 不能删除最后一个管理员
+    const adminCount = state.users.filter((u) => u.role === 'admin').length;
+    if (target.role === 'admin' && adminCount <= 1) {
+      return res.status(400).json({ error: '不能删除最后一个管理员' });
+    }
+
+    state.users.splice(targetIndex, 1);
+
+    // 记录日志
+    state.logs.push({
+      id: state.nextLogId++,
+      orderId: null,
+      userId: user.id,
+      action: 'delete_user',
+      stage: null,
+      before: null,
+      after: null,
+      comment: `删除用户: ${target.username}`,
+      at: new Date().toISOString()
+    });
+
+    writeStateToFile(dataPath, state);
+    res.json({ ok: true });
+  });
+
+  // ===== 日志查看 API =====
+
+  // 获取所有日志（管理员，支持分页）
+  app.get('/api/logs', auth, (req, res) => {
+    const user = req.currentUser;
+    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可查看日志' });
+
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+    const orderId = req.query.orderId ? Number(req.query.orderId) : null;
+
+    let logs = [...state.logs].sort((a, b) => b.id - a.id);
+
+    // 可选过滤：按订单ID
+    if (orderId) {
+      logs = logs.filter((log) => log.orderId === orderId);
+    }
+
+    const total = logs.length;
+    const startIndex = (page - 1) * limit;
+    const paginatedLogs = logs.slice(startIndex, startIndex + limit);
+
+    res.json({
+      logs: paginatedLogs,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+  });
+
+  // 订单相关 API（现有）
+
+  // 创建新订单（管理员）
+  app.post('/api/orders', auth, (req, res) => {
+    const user = req.currentUser;
+    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可创建订单' });
+
+    const { serial, customer, orderDate, dueDate, product, spec, quantity, cycleDays, note = '' } = req.body || {};
+    if (!serial || !customer || !product) {
+      return res.status(400).json({ error: '订单号、客户、产品为必填项' });
+    }
+
+    const order = {
+      id: state.nextOrderId++,
+      serial,
+      customer,
+      orderDate: orderDate || '',
+      dueDate: dueDate || '',
+      product,
+      spec: spec || '',
+      quantity: quantity || '',
+      cycleDays: cycleDays || '',
+      overdue: '',
+      note,
+      stages: {
+        material: '未开始',
+        drawing: '未开始',
+        fabric: '未开始',
+        frame: '未开始',
+        padding: '未开始'
+      },
+      assignedTo: '',
+      overall: '未开始',
+      createdAt: new Date().toISOString()
+    };
+
+    state.orders.push(order);
+
+    // 记录日志
+    state.logs.push({
+      id: state.nextLogId++,
+      orderId: order.id,
+      userId: user.id,
+      action: 'create_order',
+      stage: null,
+      before: null,
+      after: null,
+      comment: `创建订单: ${serial}`,
+      at: new Date().toISOString()
+    });
+
+    writeStateToFile(dataPath, state);
+    res.status(201).json({ order });
+  });
+
+  // 编辑订单基础信息（管理员）
+  app.put('/api/orders/:id', auth, (req, res) => {
+    const user = req.currentUser;
+    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可编辑订单' });
+
+    const order = state.orders.find((o) => o.id === Number(req.params.id));
+    if (!order) return res.status(404).json({ error: '工单不存在' });
+
+    const { serial, customer, orderDate, dueDate, product, spec, quantity, cycleDays, note } = req.body || {};
+    const changes = [];
+
+    if (serial !== undefined && serial !== order.serial) {
+      changes.push(`订单号: ${order.serial} -> ${serial}`);
+      order.serial = serial;
+    }
+    if (customer !== undefined && customer !== order.customer) {
+      changes.push(`客户: ${order.customer} -> ${customer}`);
+      order.customer = customer;
+    }
+    if (orderDate !== undefined && orderDate !== order.orderDate) {
+      changes.push(`下单日期: ${order.orderDate} -> ${orderDate}`);
+      order.orderDate = orderDate;
+    }
+    if (dueDate !== undefined && dueDate !== order.dueDate) {
+      changes.push(`交期: ${order.dueDate} -> ${dueDate}`);
+      order.dueDate = dueDate;
+    }
+    if (product !== undefined && product !== order.product) {
+      changes.push(`产品: ${order.product} -> ${product}`);
+      order.product = product;
+    }
+    if (spec !== undefined && spec !== order.spec) {
+      changes.push(`规格: ${order.spec} -> ${spec}`);
+      order.spec = spec;
+    }
+    if (quantity !== undefined && quantity !== order.quantity) {
+      changes.push(`数量: ${order.quantity} -> ${quantity}`);
+      order.quantity = quantity;
+    }
+    if (cycleDays !== undefined && cycleDays !== order.cycleDays) {
+      changes.push(`周期天数: ${order.cycleDays} -> ${cycleDays}`);
+      order.cycleDays = cycleDays;
+    }
+    if (note !== undefined && note !== order.note) {
+      changes.push(`备注已更新`);
+      order.note = note;
+    }
+
+    if (changes.length > 0) {
+      state.logs.push({
+        id: state.nextLogId++,
+        orderId: order.id,
+        userId: user.id,
+        action: 'update_order',
+        stage: null,
+        before: null,
+        after: null,
+        comment: changes.join('; '),
+        at: new Date().toISOString()
+      });
+
+      writeStateToFile(dataPath, state);
+    }
+
+    res.json({ order });
+  });
+
+  // 删除订单（管理员）
+  app.delete('/api/orders/:id', auth, (req, res) => {
+    const user = req.currentUser;
+    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可删除订单' });
+
+    const orderIndex = state.orders.findIndex((o) => o.id === Number(req.params.id));
+    if (orderIndex < 0) return res.status(404).json({ error: '工单不存在' });
+
+    const order = state.orders[orderIndex];
+    state.orders.splice(orderIndex, 1);
+
+    // 记录日志
+    state.logs.push({
+      id: state.nextLogId++,
+      orderId: order.id,
+      userId: user.id,
+      action: 'delete_order',
+      stage: null,
+      before: null,
+      after: null,
+      comment: `删除订单: ${order.serial}`,
+      at: new Date().toISOString()
+    });
+
+    writeStateToFile(dataPath, state);
+    res.json({ ok: true });
+  });
+
+  // 更新订单阶段状态（现有）
   app.patch('/api/orders/:id', auth, (req, res) => {
     const user = req.currentUser;
     const order = state.orders.find((o) => o.id === Number(req.params.id));
