@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -9,8 +9,12 @@
   <body>
     <div class="app">
       <header>
-        <h1>ODCASA 工单追踪系统</h1>
-        <div id="userInfo"></div>
+        <h1>📋 ODCASA 工单追踪系统</h1>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <a href="/dashboard.html" class="btn btn-secondary" style="text-decoration: none;">📊 仪表板</a>
+          <a href="/api-docs" target="_blank" class="btn btn-secondary" style="text-decoration: none;">📖 API 文档</a>
+          <div id="userInfo"></div>
+        </div>
       </header>
 
       <main>
@@ -249,8 +253,26 @@
             </div>
           </div>
         </div>
+
+        <!-- 确认对话框 -->
+        <div id="confirmModal" class="modal hidden">
+          <div class="modal-content modal-sm">
+            <div class="modal-header">
+              <h2 id="confirmTitle">确认操作</h2>
+              <button class="modal-close" data-close="confirmModal">×</button>
+            </div>
+            <div class="modal-body">
+              <p id="confirmMessage"></p>
+              <div class="form-actions">
+                <button id="confirmYes" class="btn-danger">确认</button>
+                <button id="confirmNo" data-close="confirmModal">取消</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </main>
     </div>
+    <script src="js/toast.js"></script>
     <script src="app.js" type="module"></script>
   </body>
 </html>

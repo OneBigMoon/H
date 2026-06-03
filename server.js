@@ -3,12 +3,33 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import express from 'express';
 import ExcelJS from 'exceljs';
+import morgan from 'morgan';
+import bcrypt from 'bcrypt';
+import logger, { httpLogStream } from './src/logger.js';
+import config from './src/config.js';
+import { setupSwagger } from './src/swagger.js';
+import {
+  helmetMiddleware,
+  corsMiddleware,
+  globalRateLimit,
+  loginRateLimit,
+  requestLogger,
+  sanitizeInput
+} from './src/security.js';
+import {
+  AuthenticationError,
+  AuthorizationError,
+  NotFoundError,
+  ValidationError,
+  ConflictError,
+  createErrorHandler,
+  setupUncaughtHandlers
+} from './src/errors.js';
+
+// 设置未捕获异常处理
+setupUncaughtHandlers(logger);
 
 const ROOT = process.cwd();
-const DEFAULT_DATA_PATH = path.join(ROOT, 'data', 'state.json');
-const DEFAULT_XLSX_PATH = path.join(ROOT, '11月 ODCASA订单-追踪进度表.xlsx');
-const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
-
 const STAGE_CONFIG = {
   material: ['客供配件', '配件'],
   drawing: ['排单', '图纸'],
@@ -50,8 +71,12 @@ function excelToDate(serial) {
   return origin.toISOString().slice(0, 10);
 }
 
-function hashPassword(password, username) {
-  return crypto.pbkdf2Sync(password, `salt-${username}`, 1000, 32, 'sha256').toString('hex');
+async function hashPassword(password) {
+  return bcrypt.hash(password, config.security.bcryptRounds);
+}
+
+async function verifyPassword(password, hash) {
+  return bcrypt.compare(password, hash);
 }
 
 function computeOverall(stages) {
@@ -70,13 +95,13 @@ function writeStateToFile(statePath, state) {
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
 }
 
-function defaultState() {
+async function defaultState() {
   return {
     users: [
-      { id: 'admin', username: 'admin', name: '管理员', role: 'admin', passwordHash: hashPassword('admin123', 'admin') },
-      { id: 'li', username: 'li', name: '李工', role: 'employee', passwordHash: hashPassword('li123', 'li') },
-      { id: 'zhang', username: 'zhang', name: '张工', role: 'employee', passwordHash: hashPassword('zhang123', 'zhang') },
-      { id: 'chen', username: 'chen', name: '陈工', role: 'employee', passwordHash: hashPassword('chen123', 'chen') }
+      { id: 'admin', username: 'admin', name: '管理员', role: 'admin', passwordHash: await hashPassword('admin123') },
+      { id: 'li', username: 'li', name: '李工', role: 'employee', passwordHash: await hashPassword('li123') },
+      { id: 'zhang', username: 'zhang', name: '张工', role: 'employee', passwordHash: await hashPassword('zhang123') },
+      { id: 'chen', username: 'chen', name: '陈工', role: 'employee', passwordHash: await hashPassword('chen123') }
     ],
     orders: [],
     logs: [],
@@ -147,34 +172,58 @@ async function parseOrdersFromXlsx(xlsxPath) {
 
 async function loadState(statePath, xlsxPath) {
   if (!fs.existsSync(statePath)) {
-    const fresh = defaultState();
+    const fresh = await defaultState();
     fresh.orders = await parseOrdersFromXlsx(xlsxPath);
     fresh.nextOrderId = fresh.orders.length + 1;
     writeStateToFile(statePath, fresh);
+    logger.info('初始化状态文件', { path: statePath, orders: fresh.orders.length });
     return fresh;
   }
 
   const raw = fs.readFileSync(statePath, 'utf8');
-  const parsed = raw.trim() ? JSON.parse(raw) : defaultState();
+  const parsed = raw.trim() ? JSON.parse(raw) : await defaultState();
 
   if (!Array.isArray(parsed.orders) || parsed.orders.length === 0) {
-    const withOrders = defaultState();
+    const withOrders = await defaultState();
     withOrders.orders = await parseOrdersFromXlsx(xlsxPath);
     withOrders.nextOrderId = withOrders.orders.length + 1;
     withOrders.logs = parsed.logs || [];
     withOrders.nextLogId = parsed.nextLogId || 1;
     writeStateToFile(statePath, withOrders);
+    logger.info('从 Excel 导入订单', { orders: withOrders.orders.length });
     return withOrders;
   }
 
+  logger.info('加载现有状态', { orders: parsed.orders.length, users: parsed.users?.length });
   return parsed;
 }
 
-async function createApp({ dataPath = DEFAULT_DATA_PATH, xlsxPath = DEFAULT_XLSX_PATH } = {}) {
+async function createApp({ dataPath = config.database.path, xlsxPath = config.excel.defaultPath } = {}) {
   const app = express();
-  app.use(express.json());
+
+  // 安全中间件
+  app.use(helmetMiddleware);
+  app.use(corsMiddleware);
+  app.use(globalRateLimit);
+
+  // 请求解析
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true }));
+
+  // 请求日志
+  app.use(morgan('combined', { stream: httpLogStream }));
+  app.use(requestLogger(logger));
+
+  // 输入消毒
+  app.use(sanitizeInput);
+
+  // 静态文件
   app.use(express.static(path.join(ROOT, 'public')));
 
+  // Swagger API 文档
+  setupSwagger(app);
+
+  logger.info('正在加载状态...');
   let state = await loadState(dataPath, xlsxPath);
   const sessions = new Map();
 
@@ -186,42 +235,139 @@ async function createApp({ dataPath = DEFAULT_DATA_PATH, xlsxPath = DEFAULT_XLSX
   const auth = (req, res, next) => {
     const cookies = parseCookies(req.headers.cookie);
     const sid = cookies.sid;
-    if (!sid) return res.status(401).json({ error: '未登录' });
+    if (!sid) {
+      logger.warn('未登录访问', { url: req.url, ip: req.ip });
+      return next(new AuthenticationError());
+    }
 
     const session = sessions.get(sid);
     if (!session || session.expires < Date.now()) {
       sessions.delete(sid);
-      return res.status(401).json({ error: '会话已过期' });
+      logger.warn('会话过期', { sid: sid.substring(0, 8) + '...', ip: req.ip });
+      return next(new AuthenticationError('会话已过期'));
     }
 
     const user = state.users.find((u) => u.id === session.userId);
-    if (!user) return res.status(401).json({ error: '用户不存在' });
+    if (!user) {
+      logger.warn('用户不存在', { userId: session.userId });
+      return next(new AuthenticationError('用户不存在'));
+    }
 
     return resolveUser(req, user), next();
   };
 
+  // 健康检查 API
+  /**
+   * @swagger
+   * /health:
+   *   get:
+   *     summary: 健康检查
+   *     description: 检查服务器是否正常运行
+   *     tags: [System]
+   *     security: []
+   *     responses:
+   *       200:
+   *         description: 服务器正常
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 ok:
+   *                   type: boolean
+   *                 version:
+   *                   type: string
+   *                 uptime:
+   *                   type: number
+   */
   app.get('/health', (_req, res) => {
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      version: '1.0.0',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString()
+    });
   });
 
-  app.post('/api/login', (req, res) => {
-    const { username, password } = req.body || {};
-    const user = state.users.find((u) => u.username === username);
-    if (!user || !user.passwordHash || user.passwordHash !== hashPassword(password, username)) {
-      return res.status(401).json({ error: '账号或密码错误' });
-    }
+  // 登录接口 - 使用限速
+  /**
+   * @swagger
+   * /api/login:
+   *   post:
+   *     summary: 用户登录
+   *     description: 使用用户名和密码登录系统
+   *     tags: [Auth]
+   *     security: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required:
+   *               - username
+   *               - password
+   *             properties:
+   *               username:
+   *                 type: string
+   *                 description: 用户名
+   *               password:
+   *                 type: string
+   *                 description: 密码
+   *     responses:
+   *       200:
+   *         description: 登录成功
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 user:
+   *                   $ref: '#/components/schemas/User'
+   *       401:
+   *         description: 账号或密码错误
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
+   */
+  app.post('/api/login', loginRateLimit, async (req, res, next) => {
+    try {
+      const { username, password } = req.body || {};
+      if (!username || !password) {
+        throw new ValidationError('用户名和密码为必填项');
+      }
 
-    const sid = crypto.randomUUID();
-    sessions.set(sid, { userId: user.id, expires: Date.now() + SESSION_TTL_MS });
-    res
-      .setHeader('Set-Cookie', `sid=${encodeURIComponent(sid)}; HttpOnly; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`)
-      .json({ user: { id: user.id, username: user.username, name: user.name, role: user.role } });
+      const user = state.users.find((u) => u.username === username);
+      if (!user || !user.passwordHash) {
+        logger.warn('登录失败 - 用户不存在', { username, ip: req.ip });
+        throw new AuthenticationError('账号或密码错误');
+      }
+
+      const isValid = await verifyPassword(password, user.passwordHash);
+      if (!isValid) {
+        logger.warn('登录失败 - 密码错误', { username, ip: req.ip });
+        throw new AuthenticationError('账号或密码错误');
+      }
+
+      const sid = crypto.randomUUID();
+      sessions.set(sid, { userId: user.id, expires: Date.now() + config.session.ttlMs });
+
+      logger.info('用户登录成功', { username, role: user.role, ip: req.ip });
+
+      res
+        .setHeader('Set-Cookie', `sid=${encodeURIComponent(sid)}; HttpOnly; Path=/; Max-Age=${Math.floor(config.session.ttlMs / 1000)}; SameSite=Strict`)
+        .json({ user: { id: user.id, username: user.username, name: user.name, role: user.role } });
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.post('/api/logout', auth, (req, res) => {
     const sid = parseCookies(req.headers.cookie).sid;
     sessions.delete(sid);
-    res.setHeader('Set-Cookie', 'sid=; Path=/; HttpOnly; Max-Age=0');
+    logger.info('用户登出', { userId: req.currentUser.id });
+    res.setHeader('Set-Cookie', 'sid=; Path=/; HttpOnly; Max-Age=0; SameSite=Strict');
     res.json({ ok: true });
   });
 
@@ -230,6 +376,51 @@ async function createApp({ dataPath = DEFAULT_DATA_PATH, xlsxPath = DEFAULT_XLSX
     res.json({ user: { id: user.id, username: user.username, name: user.name, role: user.role } });
   });
 
+  /**
+   * @swagger
+   * /api/orders:
+   *   get:
+   *     summary: 获取订单列表
+   *     description: 获取当前用户可访问的订单列表，支持排序和筛选
+   *     tags: [Orders]
+   *     parameters:
+   *       - in: query
+   *         name: sortBy
+   *         schema:
+   *           type: string
+   *           enum: [id, dueDate, orderDate, createdAt]
+   *         description: 排序字段
+   *       - in: query
+   *         name: sortOrder
+   *         schema:
+   *           type: string
+   *           enum: [asc, desc]
+   *         description: 排序方式
+   *       - in: query
+   *         name: filter
+   *         schema:
+   *           type: string
+   *           enum: [all, overdue, upcoming]
+   *         description: 筛选条件
+   *     responses:
+   *       200:
+   *         description: 成功
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 orders:
+   *                   type: array
+   *                   items:
+   *                     $ref: '#/components/schemas/Order'
+   *                 users:
+   *                   type: array
+   *                   items:
+   *                     $ref: '#/components/schemas/User'
+   *       401:
+   *         description: 未登录
+   */
   app.get('/api/orders', auth, (req, res) => {
     const user = req.currentUser;
     let orders = state.orders
@@ -355,143 +546,167 @@ async function createApp({ dataPath = DEFAULT_DATA_PATH, xlsxPath = DEFAULT_XLSX
   });
 
   // 创建新用户（管理员）
-  app.post('/api/users', auth, (req, res) => {
-    const user = req.currentUser;
-    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可创建用户' });
+  app.post('/api/users', auth, async (req, res, next) => {
+    try {
+      const user = req.currentUser;
+      if (user.role !== 'admin') throw new AuthorizationError('只有管理员可创建用户');
 
-    const { username, name, role = 'employee', password } = req.body || {};
-    if (!username || !name || !password) {
-      return res.status(400).json({ error: '用户名、姓名、密码为必填项' });
-    }
-
-    // 检查用户名是否已存在
-    const exists = state.users.find((u) => u.username === username);
-    if (exists) {
-      return res.status(409).json({ error: '用户名已存在' });
-    }
-
-    const newUser = {
-      id: username,
-      username,
-      name,
-      role,
-      passwordHash: hashPassword(password, username)
-    };
-
-    state.users.push(newUser);
-
-    // 记录日志
-    state.logs.push({
-      id: state.nextLogId++,
-      orderId: null,
-      userId: user.id,
-      action: 'create_user',
-      stage: null,
-      before: null,
-      after: null,
-      comment: `创建用户: ${username} (${name})`,
-      at: new Date().toISOString()
-    });
-
-    writeStateToFile(dataPath, state);
-    res.status(201).json({
-      user: {
-        id: newUser.id,
-        username: newUser.username,
-        name: newUser.name,
-        role: newUser.role
+      const { username, name, role = 'employee', password } = req.body || {};
+      if (!username || !name || !password) {
+        throw new ValidationError('用户名、姓名、密码为必填项');
       }
-    });
-  });
 
-  // 编辑用户信息（管理员）
-  app.put('/api/users/:id', auth, (req, res) => {
-    const user = req.currentUser;
-    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可编辑用户' });
+      if (password.length < 6) {
+        throw new ValidationError('密码长度至少6位');
+      }
 
-    const target = state.users.find((u) => u.id === req.params.id);
-    if (!target) return res.status(404).json({ error: '用户不存在' });
+      // 检查用户名是否已存在
+      const exists = state.users.find((u) => u.username === username);
+      if (exists) {
+        throw new ConflictError('用户名已存在');
+      }
 
-    const { name, role, password } = req.body || {};
-    const changes = [];
+      const newUser = {
+        id: username,
+        username,
+        name,
+        role,
+        passwordHash: await hashPassword(password)
+      };
 
-    if (name !== undefined && name !== target.name) {
-      changes.push(`姓名: ${target.name} -> ${name}`);
-      target.name = name;
-    }
-    if (role !== undefined && role !== target.role) {
-      changes.push(`角色: ${target.role} -> ${role}`);
-      target.role = role;
-    }
-    if (password) {
-      target.passwordHash = hashPassword(password, target.username);
-      changes.push('密码已更新');
-    }
+      state.users.push(newUser);
 
-    if (changes.length > 0) {
+      // 记录日志
       state.logs.push({
         id: state.nextLogId++,
         orderId: null,
         userId: user.id,
-        action: 'update_user',
+        action: 'create_user',
         stage: null,
         before: null,
         after: null,
-        comment: `更新用户 ${target.username}: ${changes.join('; ')}`,
+        comment: `创建用户: ${username} (${name})`,
         at: new Date().toISOString()
       });
 
       writeStateToFile(dataPath, state);
-    }
+      logger.info('创建用户', { username, role, createdBy: user.id });
 
-    res.json({
-      user: {
-        id: target.id,
-        username: target.username,
-        name: target.name,
-        role: target.role
+      res.status(201).json({
+        user: {
+          id: newUser.id,
+          username: newUser.username,
+          name: newUser.name,
+          role: newUser.role
+        }
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // 编辑用户信息（管理员）
+  app.put('/api/users/:id', auth, async (req, res, next) => {
+    try {
+      const user = req.currentUser;
+      if (user.role !== 'admin') throw new AuthorizationError('只有管理员可编辑用户');
+
+      const target = state.users.find((u) => u.id === req.params.id);
+      if (!target) throw new NotFoundError('用户不存在');
+
+      const { name, role, password } = req.body || {};
+      const changes = [];
+
+      if (name !== undefined && name !== target.name) {
+        changes.push(`姓名: ${target.name} -> ${name}`);
+        target.name = name;
       }
-    });
+      if (role !== undefined && role !== target.role) {
+        changes.push(`角色: ${target.role} -> ${role}`);
+        target.role = role;
+      }
+      if (password) {
+        if (password.length < 6) {
+          throw new ValidationError('密码长度至少6位');
+        }
+        target.passwordHash = await hashPassword(password);
+        changes.push('密码已更新');
+      }
+
+      if (changes.length > 0) {
+        state.logs.push({
+          id: state.nextLogId++,
+          orderId: null,
+          userId: user.id,
+          action: 'update_user',
+          stage: null,
+          before: null,
+          after: null,
+          comment: `更新用户 ${target.username}: ${changes.join('; ')}`,
+          at: new Date().toISOString()
+        });
+
+        writeStateToFile(dataPath, state);
+        logger.info('更新用户', { username: target.username, changes, updatedBy: user.id });
+      }
+
+      res.json({
+        user: {
+          id: target.id,
+          username: target.username,
+          name: target.name,
+          role: target.role
+        }
+      });
+    } catch (err) {
+      next(err);
+    }
   });
 
   // 删除用户（管理员）
-  app.delete('/api/users/:id', auth, (req, res) => {
-    const user = req.currentUser;
-    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可删除用户' });
+  app.delete('/api/users/:id', auth, (req, res, next) => {
+    try {
+      const user = req.currentUser;
+      if (user.role !== 'admin') throw new AuthorizationError('只有管理员可删除用户');
 
-    const targetIndex = state.users.findIndex((u) => u.id === req.params.id);
-    if (targetIndex < 0) return res.status(404).json({ error: '用户不存在' });
+      const targetIndex = state.users.findIndex((u) => u.id === req.params.id);
+      if (targetIndex < 0) throw new NotFoundError('用户不存在');
 
-    const target = state.users[targetIndex];
+      const target = state.users[targetIndex];
 
-    // 不能删除自己
-    if (target.id === user.id) {
-      return res.status(400).json({ error: '不能删除当前登录的用户' });
+      // 不能删除自己
+      if (target.id === user.id) {
+        throw new ValidationError('不能删除当前登录的用户');
+      }
+
+      // 不能删除最后一个管理员
+      const adminCount = state.users.filter((u) => u.role === 'admin').length;
+      if (target.role === 'admin' && adminCount <= 1) {
+        throw new ValidationError('不能删除最后一个管理员');
+      }
+
+      state.users.splice(targetIndex, 1);
+
+      // 记录日志
+      state.logs.push({
+        id: state.nextLogId++,
+        orderId: null,
+        userId: user.id,
+        action: 'delete_user',
+        stage: null,
+        before: null,
+        after: null,
+        comment: `删除用户: ${target.username}`,
+        at: new Date().toISOString()
+      });
+
+      writeStateToFile(dataPath, state);
+      logger.info('删除用户', { username: target.username, deletedBy: user.id });
+
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
     }
-
-    // 不能删除最后一个管理员
-    const adminCount = state.users.filter((u) => u.role === 'admin').length;
-    if (target.role === 'admin' && adminCount <= 1) {
-      return res.status(400).json({ error: '不能删除最后一个管理员' });
-    }
-
-    state.users.splice(targetIndex, 1);
-
-    // 记录日志
-    state.logs.push({
-      id: state.nextLogId++,
-      orderId: null,
-      userId: user.id,
-      action: 'delete_user',
-      stage: null,
-      before: null,
-      after: null,
-      comment: `删除用户: ${target.username}`,
-      at: new Date().toISOString()
-    });
-
-    writeStateToFile(dataPath, state);
-    res.json({ ok: true });
   });
 
   // ===== 日志查看 API =====
@@ -710,30 +925,59 @@ async function createApp({ dataPath = DEFAULT_DATA_PATH, xlsxPath = DEFAULT_XLSX
     res.json({ order });
   });
 
-  app.post('/api/orders/:id/assign', auth, (req, res) => {
-    const user = req.currentUser;
-    if (user.role !== 'admin') return res.status(403).json({ error: '只有管理员可分配' });
+  app.post('/api/orders/:id/assign', auth, (req, res, next) => {
+    try {
+      const user = req.currentUser;
+      if (user.role !== 'admin') throw new AuthorizationError('只有管理员可分配');
 
-    const order = state.orders.find((o) => o.id === Number(req.params.id));
-    if (!order) return res.status(404).json({ error: '工单不存在' });
+      const order = state.orders.find((o) => o.id === Number(req.params.id));
+      if (!order) throw new NotFoundError('工单不存在');
 
-    const { assignee } = req.body || {};
-    const exist = state.users.find((u) => u.id === assignee && u.role === 'employee');
-    if (!exist) return res.status(400).json({ error: '无效员工' });
+      const { assignee } = req.body || {};
+      const exist = state.users.find((u) => u.id === assignee && u.role === 'employee');
+      if (!exist) throw new ValidationError('无效员工');
 
-    order.assignedTo = assignee;
-    writeStateToFile(dataPath, state);
-    res.json({ order });
+      order.assignedTo = assignee;
+      writeStateToFile(dataPath, state);
+      logger.info('分配订单', { orderId: order.id, assignee, assignedBy: user.id });
+
+      res.json({ order });
+    } catch (err) {
+      next(err);
+    }
   });
+
+  // 健康检查 API
+  app.get('/api/health', (req, res) => {
+    res.json({
+      status: 'healthy',
+      version: '1.0.0',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      environment: config.server.env,
+      orders: state.orders.length,
+      users: state.users.length,
+      logs: state.logs.length
+    });
+  });
+
+  // 错误处理中间件（必须放在最后）
+  app.use(createErrorHandler(logger));
 
   return app;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const app = await createApp();
-  const port = Number(process.env.PORT || 3000);
-  app.listen(port, () => {
-    console.log(`工单系统已启动: http://localhost:${port}`);
+  const port = config.server.port;
+  const host = config.server.host;
+
+  app.listen(port, host, () => {
+    logger.info(`🚀 工单系统已启动`, {
+      url: `http://${host}:${port}`,
+      environment: config.server.env,
+      logLevel: config.logging.level
+    });
   });
 }
 
